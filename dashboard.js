@@ -2,7 +2,7 @@
 try {
   if (!JSON.parse(localStorage.getItem("hp_user") || '""')) window.location.replace("login.html");
 } catch (e) {}
-
+rolloverDay();   // new day? save yesterday and start fresh
 /* Q36 – tabs are shown with map() */
 const TABS = [
   { id: "daily", t: "Daily Tracker" },
@@ -19,7 +19,7 @@ const DEFAULT_MEDS = [
 const DEFAULT_TASKS = ["Morning Hydration (500ml)", "Eat Breakfast", "15-Minute Stretch", "Read for 30 min", "Cycle Tracker Log"]
   .map((name, i) => ({ id: i + 1, name, done: false }));
 
-const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+
 const Bar = ({ value }) => h("div", { className: "bar" }, h("i", { style: { width: value + "%" } }));
 const Panel = ({ title, children }) => h("div", { className: "panel" }, h("h3", null, title), children);
 
@@ -163,6 +163,90 @@ function NoteTracker({ storageKey, fields, button }) {
     h("ul", { className: "list" },
       entries.map((en, i) => h("li", { key: i }, fields.map(f => en[f.key]).filter(Boolean).join(" · ")))));
 }
+
+function PeriodTracker() {
+  const [form, setForm] = useState({ start: "", len: "", sym: "" });
+  const [entries, setEntries] = useLocalStorage("hp_cycle", []);
+  const [error, setError] = useState("");
+  const [permission, setPermission] = useState(() =>
+    "Notification" in window ? Notification.permission : "unsupported");
+  const [notificationMessage, setNotificationMessage] = useState("");
+  const latest = Array.isArray(entries) ? entries[0] : null;
+  const nextDate = nextPeriodDate(latest);
+  const dateNumber = date => {
+    const [year, month, day] = date.split("-").map(Number);
+    return Date.UTC(year, month - 1, day);
+  };
+  const daysUntil = nextDate
+    ? Math.round((dateNumber(nextDate) - dateNumber(dayKey())) / 86400000)
+    : null;
+  const displayDate = date => {
+    const [year, month, day] = date.split("-").map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString();
+  };
+  const save = () => {
+    if (form.start > dayKey()) {
+      setError("The last period start date cannot be in the future.");
+      return;
+    }
+    if (!form.start || !Number.isInteger(Number(form.len)) || !nextPeriodDate(form)) {
+      setError("Enter a valid start date and cycle length (1–100 days).");
+      return;
+    }
+    setEntries([{ ...form }, ...(Array.isArray(entries) ? entries : [])]);
+    setForm({ start: "", len: "", sym: "" });
+    setError("");
+  };
+  const enableNotifications = async () => {
+    if (!("Notification" in window)) {
+      setPermission("unsupported");
+      setNotificationMessage("This browser does not support notifications.");
+      return;
+    }
+    try {
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      if (result === "granted") {
+        setNotificationMessage("Reminder enabled. Keep the website open to receive it.");
+        checkPeriodReminder();
+      } else {
+        setNotificationMessage("Notifications were not allowed. Check browser permissions and use localhost or HTTPS.");
+      }
+    } catch (e) {
+      console.error("Could not enable period notifications.", e);
+      setNotificationMessage("Could not enable notifications. Check your browser settings and try again.");
+    }
+  };
+  return h("div", null,
+    h("div", { className: "two" },
+      h("div", null, h("label", null, "Last period start"),
+        h("input", { type: "date", value: form.start, onChange: e => setForm({ ...form, start: e.target.value }) })),
+      h("div", null, h("label", null, "Cycle length (days)"),
+        h("input", { type: "number", min: 1, max: 100, value: form.len, placeholder: "e.g. 28",
+          onChange: e => setForm({ ...form, len: e.target.value }) })),
+      h("div", { style: { gridColumn: "1 / -1" } }, h("label", null, "Symptoms"),
+        h("textarea", { rows: 3, placeholder: "Cramps, mood, flow...", value: form.sym,
+          onChange: e => setForm({ ...form, sym: e.target.value }) }))),
+    error && h("p", { className: "error" }, error),
+    h(Button, { label: "Save Cycle Info", onClick: save }),
+    nextDate && h("div", { className: "panel", style: { marginTop: 16 } },
+      h("h3", null, "Next period estimate"),
+      h("p", null, "Estimated start: " + displayDate(nextDate)),
+      h("p", { className: "note" }, daysUntil > 0 ? "About " + daysUntil + " days away."
+        : daysUntil === 0 ? "Estimated to start today."
+        : "This estimate has passed. Update your last period start date."),
+      h("p", { className: "note" }, "This is a calendar estimate based on your saved cycle length, not medical advice."),
+      permission === "granted"
+        ? h("p", { className: "note" }, "Period reminder notifications are enabled.")
+        : h(Button, { label: "Enable period reminder", variant: "ghost", small: true, onClick: enableNotifications }),
+      notificationMessage && h("p", { className: "note" }, notificationMessage),
+      h("p", { className: "note" }, "A notification is sent one day before the estimate while this website is open (localhost or HTTPS).")),
+    h("ul", { className: "list" },
+      (Array.isArray(entries) ? entries : []).map((entry, i) =>
+        h("li", { key: i }, [entry.start && "Start " + entry.start, entry.len && entry.len + "-day cycle",
+          entry.sym].filter(Boolean).join(" · ")))));
+}
+
 const FORMS = {
   diet: { title: "Diet Planner", storageKey: "hp_diet", button: "Save Diet Log", fields: [
     { key: "meal", label: "Meal type", ph: "Breakfast, Lunch..." },
@@ -181,7 +265,9 @@ function NotesTab() {
   return h("div", null,
     h("div", { className: "pills" },
       Object.keys(FORMS).map(k => h("button", { key: k, className: kind === k ? "on" : "", onClick: () => setKind(k) }, FORMS[k].title))),
-    h(Panel, { title: FORMS[kind].title }, h(NoteTracker, { key: kind, ...FORMS[kind] })));
+    h(Panel, { title: FORMS[kind].title }, kind === "period"
+      ? h(PeriodTracker)
+      : h(NoteTracker, { key: kind, ...FORMS[kind] })));
 }
 
 /* Insights: progress calculated from the other tabs */
@@ -206,7 +292,7 @@ function Settings({ user, setUser, theme, setTheme, onLogout }) {
   const [saved, setSaved] = useState(false);
   const resetAll = () => {
     if (!confirm("Delete all saved tracker data on this device?")) return;
-    ["hp_meds_list", "hp_routine", "hp_water", "hp_diet", "hp_cycle", "hp_notes"].forEach(k => localStorage.removeItem(k));
+    ["hp_meds_list", "hp_routine", "hp_water", "hp_diet", "hp_cycle", "hp_notes", "hp_history", "hp_day", "hp_period_notified"].forEach(k => localStorage.removeItem(k));
     window.location.reload();
   };
   return h(Panel, { title: "Settings" },
@@ -224,6 +310,7 @@ function Settings({ user, setUser, theme, setTheme, onLogout }) {
 }
 
 function Dashboard() {
+  usePeriodReminder();
   const [user, setUser] = useLocalStorage("hp_user", "");
   const [theme, setTheme] = useTheme();
   const fromUrl = window.location.hash.replace("#", "");

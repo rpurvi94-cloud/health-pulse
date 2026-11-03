@@ -1,6 +1,92 @@
 /* Shared by all pages */
 const { useState, useEffect, createElement: h } = React;
+/* ---------- Daily history helpers (used by the live progress card) ---------- */
+const WATER_GOAL = 8;
+const TRACKED = ["hp_meds_list", "hp_routine", "hp_water"];
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const dayKey = d => {
+  const x = d || new Date();
+  return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+};
+const readJSON = (k, fallback) => {
+  try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : fallback; } catch (e) { return fallback; }
+};
+const writeJSON = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
+function nextPeriodDate(entry) {
+  if (!entry || !/^\d{4}-\d{2}-\d{2}$/.test(entry.start)) return null;
+  const cycleLength = Number(entry.len);
+  if (!Number.isInteger(cycleLength) || cycleLength < 1 || cycleLength > 100) return null;
+  const [year, month, day] = entry.start.split("-").map(Number);
+  const start = new Date(year, month - 1, day);
+  if (start.getFullYear() !== year || start.getMonth() !== month - 1 || start.getDate() !== day) return null;
+  start.setDate(start.getDate() + cycleLength);
+  while (dayKey(start) < dayKey()) start.setDate(start.getDate() + cycleLength);
+  return dayKey(start);
+}
+
+function checkPeriodReminder() {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const entries = readJSON("hp_cycle", []);
+  const nextDate = nextPeriodDate(Array.isArray(entries) ? entries[0] : null);
+  if (!nextDate) return;
+  const [year, month, day] = nextDate.split("-").map(Number);
+  const reminderDate = new Date(year, month - 1, day);
+  reminderDate.setDate(reminderDate.getDate() - 1);
+  if (dayKey() !== dayKey(reminderDate)) return;
+  if (readJSON("hp_period_notified", "") === nextDate) return;
+  new Notification("Period reminder", {
+    body: "Your next period is estimated to start tomorrow."
+  });
+  writeJSON("hp_period_notified", nextDate);
+}
+
+function usePeriodReminder() {
+  useEffect(() => {
+    checkPeriodReminder();
+    const id = setInterval(checkPeriodReminder, 60000);
+    return () => clearInterval(id);
+  }, []);
+}
+
+/* Today's numbers, read from the saved trackers */
+function summarize() {
+  const meds = readJSON("hp_meds_list", []);
+  const tasks = readJSON("hp_routine", []);
+  return {
+    md: meds.filter(m => m.done).length, mt: meds.length,
+    td: tasks.filter(t => t.done).length, tt: tasks.length,
+    water: Number(readJSON("hp_water", 0)) || 0
+  };
+}
+/* One overall score (0-100) for a day */
+function scoreOf(s) {
+  const parts = [];
+  if (s.mt > 0) parts.push(pct(s.md, s.mt));
+  if (s.tt > 0) parts.push(pct(s.td, s.tt));
+  parts.push(Math.min(100, pct(s.water, WATER_GOAL)));
+  return Math.round(parts.reduce((a, b) => a + b, 0) / parts.length);
+}
+/* Save today's numbers into the history (key = date) */
+function logToday() {
+  const hist = readJSON("hp_history", {});
+  hist[dayKey()] = summarize();
+  writeJSON("hp_history", hist);
+}
+/* When a new day starts: keep the old day in history, then untick everything */
+function rolloverDay() {
+  const today = dayKey();
+  const last = readJSON("hp_day", "");
+  if (last && last !== today) {
+    const hist = readJSON("hp_history", {});
+    hist[last] = summarize();
+    writeJSON("hp_history", hist);
+    writeJSON("hp_meds_list", readJSON("hp_meds_list", []).map(m => ({ ...m, done: false, time: "" })));
+    writeJSON("hp_routine", readJSON("hp_routine", []).map(t => ({ ...t, done: false })));
+    writeJSON("hp_water", 0);
+  }
+  writeJSON("hp_day", today);
+}
 /* Q35 – Icons (inline SVG instead of react-icons) */
 const PATHS = {
   heart: "M12 21s-7-4.4-9.3-9A5.3 5.3 0 0 1 12 6a5.3 5.3 0 0 1 9.3 6C19 16.6 12 21 12 21z",
@@ -34,7 +120,8 @@ function useLocalStorage(key, initial) {
   });
   useEffect(() => {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
-  }, [key, value]);
+  if (TRACKED.indexOf(key) !== -1) logToday();
+}, [key, value]);
   return [value, setValue];
 }
 
